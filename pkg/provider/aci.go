@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Azure/azure-sdk-for-go/sdk/azcore/to"
 	azaciv2 "github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/containerinstance/armcontainerinstance/v2"
 	"github.com/gorilla/websocket"
 	"github.com/pkg/errors"
@@ -346,6 +347,12 @@ func (p *ACIProvider) CreatePod(ctx context.Context, pod *v1.Pod) error {
 		return err
 
 	}
+	// get container group identities
+	id, err := p.getContainerGroupIdentity(ctx, pod)
+	if err != nil {
+		return err
+
+	}
 
 	if p.enabledFeatures.IsEnabled(ctx, featureflag.InitContainerFeature) {
 		// get initContainers
@@ -367,6 +374,7 @@ func (p *ACIProvider) CreatePod(ctx context.Context, pod *v1.Pod) error {
 	cg.Properties.Volumes = volumes
 	cg.Properties.ImageRegistryCredentials = creds
 	cg.Properties.Diagnostics = p.getDiagnostics(pod)
+	cg.Identity = id
 
 	filterWindowsServiceAccountSecretVolume(ctx, p.operatingSystem, cg)
 
@@ -897,6 +905,49 @@ func (p *ACIProvider) CleanupPod(ctx context.Context, ns, name string) error {
 func (p *ACIProvider) PortForward(ctx context.Context, namespace, pod string, port int32, stream io.ReadWriteCloser) error {
 	log.G(ctx).Info("Port Forward is not supported in AZure ACI")
 	return nil
+}
+
+func (p *ACIProvider) getContainerGroupIdentity(ctx context.Context, pod *v1.Pod) (*azaciv2.ContainerGroupIdentity, error) {
+	_, exists := pod.Labels["user-assigned-identities/client-id"]
+	if exists {
+		uaids, err := p.getUserAssignedIdentites(ctx, pod)
+		if err != nil {
+			return nil, err
+		}
+		id := azaciv2.ContainerGroupIdentity{
+			Type:                   to.Ptr(azaciv2.ResourceIdentityTypeUserAssigned),
+			UserAssignedIdentities: uaids,
+		}
+		return &id, nil
+	} else {
+		return nil, nil
+	}
+}
+
+// match clientID from Pod spec to the user-assigned identities that are available in Azure
+func (p *ACIProvider) getUserAssignedIdentites(ctx context.Context, pod *v1.Pod) (map[string]*azaciv2.UserAssignedIdentities, error) {
+	uais, err := p.azClientsAPIs.ListUserAssignedIdentities(ctx)
+	if err != nil {
+		return nil, err
+	}
+	clientId, exists := pod.Labels["user-assigned-identities/client-id"]
+	uaids := map[string]*azaciv2.UserAssignedIdentities{}
+	if exists {
+		for _, u := range uais {
+			if clientId == *u.Properties.ClientID {
+				uaID := *u.ID
+				uaids = map[string]*azaciv2.UserAssignedIdentities{
+					uaID: {},
+				}
+			}
+		}
+		if len(uaids) < 1 {
+			return uaids, errors.Errorf("no identity found that matches requested clientid: %v", clientId)
+		}
+	} else {
+		log.G(ctx).Debug("no user-assigned-identities requested in pod spec. skipping lookups")
+	}
+	return uaids, nil
 }
 
 func (p *ACIProvider) getImagePullSecrets(pod *v1.Pod) ([]*azaciv2.ImageRegistryCredential, error) {

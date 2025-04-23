@@ -15,6 +15,7 @@ import (
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore/policy"
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore/runtime"
 	azaciv2 "github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/containerinstance/armcontainerinstance/v2"
+	"github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/msi/armmsi"
 	"github.com/pkg/errors"
 	"github.com/virtual-kubelet/azure-aci/pkg/auth"
 	"github.com/virtual-kubelet/azure-aci/pkg/validation"
@@ -33,12 +34,14 @@ type AzClientsInterface interface {
 	DeleteContainerGroup(ctx context.Context, resourceGroup, cgName string) error
 	ListLogs(ctx context.Context, resourceGroup, cgName, containerName string, opts api.ContainerLogOpts) (*string, error)
 	ExecuteContainerCommand(ctx context.Context, resourceGroup, cgName, containerName string, containerReq azaciv2.ContainerExecRequest) (*azaciv2.ContainerExecResponse, error)
+	ListUserAssignedIdentities(ctx context.Context) ([]*armmsi.Identity, error)
 }
 
 type AzClientsAPIs struct {
-	ContainersClient     *azaciv2.ContainersClient
-	ContainerGroupClient *azaciv2.ContainerGroupsClient
-	LocationClient       *azaciv2.LocationClient
+	ContainersClient             *azaciv2.ContainersClient
+	ContainerGroupClient         *azaciv2.ContainerGroupsClient
+	LocationClient               *azaciv2.LocationClient
+	UserAssignedIdentitiesClient *armmsi.UserAssignedIdentitiesClient
 }
 
 func NewAzClientsAPIs(ctx context.Context, azConfig auth.Config) (*AzClientsAPIs, error) {
@@ -90,9 +93,15 @@ func NewAzClientsAPIs(ctx context.Context, azConfig auth.Config) (*AzClientsAPIs
 		return nil, errors.Wrap(err, "failed to create location client ")
 	}
 
+	uaiClient, err := armmsi.NewUserAssignedIdentitiesClient(azConfig.AuthConfig.SubscriptionID, credential, &options)
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to create user-assigned identities client ")
+	}
+
 	obj.ContainersClient = cClient
 	obj.ContainerGroupClient = cgClient
 	obj.LocationClient = lClient
+	obj.UserAssignedIdentitiesClient = uaiClient
 
 	logger.Debug("aci clients have been initialized successfully")
 	return &obj, nil
@@ -294,6 +303,27 @@ func (a *AzClientsAPIs) ExecuteContainerCommand(ctx context.Context, resourceGro
 
 	logger.Debug("ExecuteContainerCommand is successful")
 	return &result.ContainerExecResponse, nil
+}
+
+func (a *AzClientsAPIs) ListUserAssignedIdentities(ctx context.Context) ([]*armmsi.Identity, error) {
+	logger := log.G(ctx).WithField("method", "ListUserAssignedIdentities")
+	ctx, span := trace.StartSpan(ctx, "client.ListUserAssignedIdentities")
+	defer span.End()
+
+	var rawResponse *http.Response
+	ctxWithResp := runtime.WithCaptureResponse(ctx, &rawResponse)
+	pager := a.UserAssignedIdentitiesClient.NewListBySubscriptionPager(nil)
+
+	var uaiList []*armmsi.Identity
+	for pager.More() {
+		page, err := pager.NextPage(ctxWithResp)
+		if err != nil {
+			logger.Errorf("an error has occurred while getting list of user-assigned identities, status code %d", rawResponse.StatusCode)
+			return nil, err
+		}
+		uaiList = append(uaiList, page.Value...)
+	}
+	return uaiList, nil
 }
 
 func containerGroupName(podNS, podName string) string {
