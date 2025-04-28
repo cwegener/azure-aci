@@ -32,11 +32,19 @@ jobs:
           echo "REPO=${GITHUB_REPOSITORY@L}" >> "${GITHUB_ENV}"
 
 
-      - name: Build and push
+      - name: virtual-kubelet
         uses: docker/build-push-action@v6
         with:
           file: docker/virtual-kubelet/Dockerfile
           context: .
           build-args: 'VERSION_FLAGS=-ldflags=-X main.buildVersion=1.6.2 -X main.buildTime=2025-04-28T16:49:55'
+          push: false
+          tags: ${{ env.REPO }}:${{ steps.get_sha.outputs.SHA }}
+
+      - name: init-container
+        uses: docker/build-push-action@v6
+        with:
+          file: docker/init-container/Dockerfile
+          context: .
           push: false
           tags: ${{ env.REPO }}:${{ steps.get_sha.outputs.SHA }}
