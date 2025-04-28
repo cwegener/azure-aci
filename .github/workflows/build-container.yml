@@ -19,10 +19,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Docker Buildx
-        id: buildx
-        uses: docker/setup-buildx-action@v3
-
       - name: Get commit SHA
         id: get_sha
         run: echo "SHA=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
@@ -36,7 +32,6 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           file: docker/virtual-kubelet/Dockerfile
-          context: .
           build-args: 'VERSION_FLAGS=-ldflags=-X main.buildVersion=1.6.2 -X main.buildTime=2025-04-28T16:49:55'
           push: false
           tags: ${{ env.REPO }}:${{ steps.get_sha.outputs.SHA }}
@@ -45,6 +40,5 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           file: docker/init-container/Dockerfile
-          context: .
           push: false
           tags: ${{ env.REPO }}:${{ steps.get_sha.outputs.SHA }}
